@@ -1,0 +1,11 @@
+# --- Frontend & Web Interface ---
+streamlit
+
+# --- Agentic AI & LangChain Framework ---
+langchain-core
+langchain-groq
+langchain-openai
+
+# --- API Requests & Environment ---
+requests
+python-dotenv
