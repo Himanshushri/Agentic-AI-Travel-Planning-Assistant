@@ -1,7 +1,7 @@
 """
 Streamlit Frontend for the Agentic AI-Based Travel Planning Assistant.
-Features interactive sidebar preferences, editable natural-language prompt box,
-and tabbed output (Human-Readable Itinerary, Structured JSON, and Agent Tool Trace).
+Clean UI with trip preferences + action button in the sidebar, and seamless
+silent failover between Live LLM (Groq/OpenAI) and Built-in ReAct Engine.
 """
 
 import json
@@ -16,7 +16,7 @@ load_dotenv()
 
 
 def _get_secret(key_name: str) -> str:
-    """Safely fetches an API key from .env or Streamlit Cloud Secrets without throwing local errors."""
+    """Safely fetches an API key from .env or Streamlit Cloud Secrets."""
     val = os.getenv(key_name, "")
     if val:
         return val
@@ -24,6 +24,67 @@ def _get_secret(key_name: str) -> str:
         return str(st.secrets.get(key_name, ""))
     except Exception:
         return ""
+
+
+def _execute_with_failover(
+    user_query: str,
+    source: str,
+    destination: str,
+    num_days: int,
+    flight_pref: str,
+    max_hotel_budget: int,
+    min_stars: int,
+    interest_type: str
+):
+    """
+    Runs the live LLM agent automatically when an API key is available,
+    with silent automatic failover to the Built-in ReAct Engine (and vice versa)
+    so the user always gets a complete plan without seeing backend engine details.
+    """
+    groq_key = _get_secret("GROQ_API_KEY").strip()
+    openai_key = _get_secret("OPENAI_API_KEY").strip()
+
+    provider = "groq" if groq_key else ("openai" if openai_key else "")
+    api_key = groq_key or openai_key
+
+    # Primary path: Live LLM if key is configured -> silent failover to Built-in ReAct
+    if provider and api_key:
+        try:
+            return run_live_llm_agent(
+                provider=provider,
+                api_key=api_key,
+                user_query=user_query
+            )
+        except Exception:
+            return run_autonomous_react_simulation(
+                source=source,
+                destination=destination,
+                num_days=num_days,
+                flight_pref=flight_pref,
+                max_hotel_budget=max_hotel_budget,
+                min_stars=min_stars,
+                interest_type=interest_type
+            )
+
+    # Secondary path: Built-in ReAct -> failover to LLM if available
+    try:
+        return run_autonomous_react_simulation(
+            source=source,
+            destination=destination,
+            num_days=num_days,
+            flight_pref=flight_pref,
+            max_hotel_budget=max_hotel_budget,
+            min_stars=min_stars,
+            interest_type=interest_type
+        )
+    except Exception:
+        if provider and api_key:
+            return run_live_llm_agent(
+                provider=provider,
+                api_key=api_key,
+                user_query=user_query
+            )
+        raise
 
 
 st.set_page_config(
@@ -41,39 +102,10 @@ st.markdown(
 cities = ["Delhi", "Mumbai", "Goa", "Bangalore", "Chennai", "Hyderabad", "Kolkata", "Jaipur"]
 place_types = ["All", "beach", "fort", "lake", "market", "monument", "museum", "park", "temple"]
 
-# Sidebar for LLM Configuration & Trip Preferences
+# Sidebar: Trip Preferences + Generate Button
 with st.sidebar:
-    st.header("⚙️ LLM & Agent Settings")
-    llm_provider = st.selectbox(
-        "Select LLM Provider",
-        options=[
-            "Groq (Llama-3.3-70B)",
-            "OpenAI (GPT-4o-mini)",
-            "Built-in ReAct Engine (No API Key)"
-        ]
-    )
-
-    provider_key = "groq" if "Groq" in llm_provider else ("openai" if "OpenAI" in llm_provider else "builtin")
-
-    api_key = ""
-    if provider_key == "groq":
-        api_key = st.text_input(
-            "Enter GROQ API Key",
-            value=_get_secret("GROQ_API_KEY"),
-            type="password",
-            help="Paste your Groq API key (gsk_...) or configure GROQ_API_KEY in Streamlit Secrets."
-        )
-    elif provider_key == "openai":
-        api_key = st.text_input(
-            "Enter OPENAI API Key",
-            value=_get_secret("OPENAI_API_KEY"),
-            type="password",
-            help="Paste your OpenAI API key (sk-...) or configure OPENAI_API_KEY in Streamlit Secrets."
-        )
-
-    st.divider()
     st.header("🗺️ Trip Preferences")
-    source_city = st.selectbox("Source City", options=cities, index=4)       # Default: Chennai
+    source_city = st.selectbox("Source City", options=cities, index=4)          # Default: Chennai
     destination_city = st.selectbox("Destination City", options=cities, index=1) # Default: Mumbai
     num_days = st.slider("Trip Duration (Days)", min_value=2, max_value=7, value=3)
     flight_pref = st.radio("Flight Optimization", options=["Cheapest", "Fastest"], horizontal=True)
@@ -84,6 +116,13 @@ with st.sidebar:
         "Minimum Hotel Star Rating", min_value=2, max_value=5, value=3, step=1
     )
     interest_type = st.selectbox("Primary Interest", options=place_types, index=0)
+
+    st.divider()
+    generate_clicked = st.button(
+        "🚀 Generate Autonomous Trip Plan",
+        type="primary",
+        use_container_width=True
+    )
 
 # Dataset Overview Expander
 with st.expander("📊 View Dataset Overview (`flights.json`, `hotels.json`, `places.json`)"):
@@ -119,36 +158,18 @@ custom_query = st.text_area(
     height=95
 )
 
-if st.button("🚀 Generate Autonomous Trip Plan", type="primary", use_container_width=True):
+if generate_clicked:
     with st.spinner("🤖 Agent is reasoning, calling LangChain tools, and fetching live Open-Meteo weather..."):
-        try:
-            if provider_key in ("groq", "openai") and api_key.strip():
-                result = run_live_llm_agent(
-                    provider=provider_key,
-                    api_key=api_key.strip(),
-                    user_query=custom_query
-                )
-            else:
-                result = run_autonomous_react_simulation(
-                    source=source_city,
-                    destination=destination_city,
-                    num_days=num_days,
-                    flight_pref=flight_pref,
-                    max_hotel_budget=max_hotel_budget,
-                    min_stars=min_hotel_rating,
-                    interest_type=interest_type
-                )
-        except Exception as exc:
-            st.warning(f"Live LLM API returned an error ({exc}). Seamlessly switched to Built-in ReAct Engine.")
-            result = run_autonomous_react_simulation(
-                source=source_city,
-                destination=destination_city,
-                num_days=num_days,
-                flight_pref=flight_pref,
-                max_hotel_budget=max_hotel_budget,
-                min_stars=min_hotel_rating,
-                interest_type=interest_type
-            )
+        result = _execute_with_failover(
+            user_query=custom_query,
+            source=source_city,
+            destination=destination_city,
+            num_days=num_days,
+            flight_pref=flight_pref,
+            max_hotel_budget=max_hotel_budget,
+            min_stars=min_hotel_rating,
+            interest_type=interest_type
+        )
 
         tab1, tab2, tab3 = st.tabs([
             "📅 Human-Readable Itinerary",
